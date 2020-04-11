@@ -56,14 +56,23 @@ int main(int argc, char *argv[])
 
     SDL_Window *window =
         SDL_CreateWindow(
-            "Something",
+#ifdef ENABLE_VSYNC
+            "Sound probe (vsync)",
+#else
+            "Sound probe (no vsync)",
+#endif
             0, 0, 800, 600,
             SDL_WINDOW_RESIZABLE);
 
     SDL_Renderer *renderer =
         SDL_CreateRenderer(
             window, -1,
-            SDL_RENDERER_ACCELERATED);
+#ifdef ENABLE_VSYNC
+            SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC
+#else
+            SDL_RENDERER_ACCELERATED 
+#endif
+            );
 
     const Uint8 *keyboard = SDL_GetKeyboardState(NULL);
     int pressed = 0;
@@ -77,7 +86,7 @@ int main(int argc, char *argv[])
                 break;
 
             case SDL_MOUSEBUTTONDOWN: {
-                flash = 5;
+                flash = 10;
                 alSourcePlay(source);
             } break;
             }
@@ -86,7 +95,7 @@ int main(int argc, char *argv[])
         if (keyboard[SDL_SCANCODE_E]) {
             if (!pressed) {
                 pressed = 1;
-                flash = 5;
+                flash = 10;
                 alSourcePlay(source);
             }
         } else {
@@ -103,12 +112,6 @@ int main(int argc, char *argv[])
 
         SDL_RenderPresent(renderer);
     }
-
-    // ALint source_state = 0;
-    // alGetSourcei(source, AL_SOURCE_STATE, &source_state);
-    // while (source_state == AL_PLAYING) {
-    //     alGetSourcei(source, AL_SOURCE_STATE, &source_state);
-    // }
 
     alDeleteSources(1, &source);
     alDeleteBuffers(1, &buffer);
