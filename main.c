@@ -8,8 +8,64 @@
 
 #include <SDL.h>
 
+#define SOUND_OPENAL 0
+#define SOUND_SDL_QUEUED 1
+#define SOUND_SDL_CALLBACK 2
+
+#define WINDOW_TITLE_CAPACITY 256
+
+#define SAMPLE_FILE_PATH "enemy_shoot-48000.wav"
+
+const char *compose_window_title(void)
+{
+    size_t size = 0;
+    char *title = malloc(sizeof(char) * WINDOW_TITLE_CAPACITY);
+
+#ifdef ENABLE_VSYNC
+    size += snprintf(title + size, WINDOW_TITLE_CAPACITY, "vsync");
+#else
+    size += snprintf(title + size, WINDOW_TITLE_CAPACITY, "no vsync");
+#endif
+
+#if SOUND == SOUND_OPENAL 
+    size += snprintf(title + size, WINDOW_TITLE_CAPACITY, ",openal");
+#elif SOUND == SOUND_SDL_QUEUED
+    size += snprintf(title + size, WINDOW_TITLE_CAPACITY, ",sdl queued");
+#elif SOUND == SOUND_SDL_CALLBACK
+    size += snprintf(title + size, WINDOW_TITLE_CAPACITY, ",sdl callback");
+#else
+    size += snprintf(title + size, WINDOW_TITLE_CAPACITY, ",unknown");
+#endif
+
+    return title;
+}
+
+#if SOUND == SOUND_SDL_CALLBACK
+struct Sample
+{
+    Uint8 *buf;
+    Uint32 len;
+    Uint32 cur;
+};
+
+void audio_callback(void *userdata, Uint8 *output, int output_len)
+{
+    struct Sample *sample = userdata;
+
+    Uint32 len = output_len;
+    if ((sample->len - sample->cur) < len) {
+        len = sample->len - sample->cur;
+    }
+
+    memcpy(output, sample->buf + sample->cur, len);
+
+    sample->cur += len;
+}
+#endif
+
 int main(int argc, char *argv[])
 {
+#if SOUND == SOUND_OPENAL
     ALCdevice *device = alcOpenDevice(NULL);
     if (!device) {
         fprintf(stderr, "Could not open device for some reason\n");
@@ -47,20 +103,91 @@ int main(int argc, char *argv[])
     ALenum format;
     ALvoid *data;
     ALboolean loop = AL_FALSE;
-    alutLoadWAVFile("enemy_shoot-48000.wav", &format, &data, &size, &freq, &loop);
+    alutLoadWAVFile(SAMPLE_FILE_PATH, &format, &data, &size, &freq, &loop);
 
     alBufferData(buffer, format, data, size, freq);
     alSourcei(source, AL_BUFFER, buffer);
 
     SDL_Init(SDL_INIT_VIDEO);
+#define PLAY_SOUND \
+    do { \
+        alSourcePlay(source); \
+    } while (0)
+#elif SOUND == SOUND_SDL_QUEUED
+    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
+
+    Uint8 *audio_buf = NULL;
+    Uint32 audio_len = 0;
+
+    SDL_AudioSpec want = {};
+    if (SDL_LoadWAV(SAMPLE_FILE_PATH, &want, &audio_buf, &audio_len) == NULL) {
+        fprintf(stderr, "SDL pooped itself: Failed to load "SAMPLE_FILE_PATH": %s\n", SDL_GetError());
+        exit(1);
+    }
+
+    SDL_AudioSpec have = {};
+    SDL_AudioDeviceID dev = SDL_OpenAudioDevice(
+            NULL,
+            0,
+            &want,
+            &have,
+            SDL_AUDIO_ALLOW_FORMAT_CHANGE);
+    if (dev == 0) {
+        fprintf(stderr, "SDL pooped itself: Failed to open audio: %s\n", SDL_GetError());
+        exit(1);
+    }
+
+    if (have.format != want.format) {
+        fprintf(stderr, "[WARN] We didn't get expected audio format.\n");
+        exit(1);
+    }
+    SDL_PauseAudioDevice(dev, 0);
+#define PLAY_SOUND \
+    do { \
+        SDL_QueueAudio(dev, audio_buf, audio_len);\
+    } while(0)
+#elif SOUND == SOUND_SDL_CALLBACK
+    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
+
+    struct Sample sample = {0};
+
+    SDL_AudioSpec want = {};
+    if (SDL_LoadWAV(SAMPLE_FILE_PATH, &want, &sample.buf, &sample.len) == NULL) {
+        fprintf(stderr, "SDL pooped itself: Failed to load "SAMPLE_FILE_PATH": %s\n", SDL_GetError());
+        exit(1);
+    }
+    want.samples = 256;
+    want.callback = audio_callback;
+    want.userdata = &sample;
+
+    SDL_AudioSpec have = {};
+    SDL_AudioDeviceID dev = SDL_OpenAudioDevice(
+            NULL,
+            0,
+            &want,
+            &have,
+            SDL_AUDIO_ALLOW_FORMAT_CHANGE);
+    if (dev == 0) {
+        fprintf(stderr, "SDL pooped itself: Failed to open audio: %s\n", SDL_GetError());
+        exit(1);
+    }
+
+    if (have.format != want.format) {
+        fprintf(stderr, "[WARN] We didn't get expected audio format.\n");
+        exit(1);
+    }
+    SDL_PauseAudioDevice(dev, 0);
+#define PLAY_SOUND \
+    do { \
+        sample.cur = 0; \
+    } while (0)
+#else
+#error "Provided unknown sound driver"
+#endif
 
     SDL_Window *window =
         SDL_CreateWindow(
-#ifdef ENABLE_VSYNC
-            "Sound probe (vsync)",
-#else
-            "Sound probe (no vsync)",
-#endif
+            compose_window_title(),
             0, 0, 800, 600,
             SDL_WINDOW_RESIZABLE);
 
@@ -87,7 +214,7 @@ int main(int argc, char *argv[])
 
             case SDL_MOUSEBUTTONDOWN: {
                 flash = 10;
-                alSourcePlay(source);
+                PLAY_SOUND;
             } break;
             }
         }
@@ -96,7 +223,7 @@ int main(int argc, char *argv[])
             if (!pressed) {
                 pressed = 1;
                 flash = 10;
-                alSourcePlay(source);
+                PLAY_SOUND;
             }
         } else {
             pressed = 0;
@@ -113,12 +240,16 @@ int main(int argc, char *argv[])
         SDL_RenderPresent(renderer);
     }
 
+#if SOUND == SOUND_OPENAL
     alDeleteSources(1, &source);
     alDeleteBuffers(1, &buffer);
     device = alcGetContextsDevice(context);
     alcMakeContextCurrent(NULL);
     alcDestroyContext(context);
     alcCloseDevice(device);
+#endif
+
+    SDL_Quit();
 
     return 0;
 }
